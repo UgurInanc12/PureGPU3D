@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "puregpu3d"
+version = "0.1.0"
+description = "Pure-GPU oriented 2D to 3D SBS video engine"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Ugur Inanc" }]
+dependencies = [
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "typer>=0.12",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+ui = ["gradio>=5.0"]
+
+[project.scripts]
+puregpu3d = "puregpu3d.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

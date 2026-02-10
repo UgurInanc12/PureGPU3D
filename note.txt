@@ -1,0 +1,141 @@
+PureGPU3D - Session Notes (2026-02-09)
+
+1) Proje nedir / ne ise yarar
+- PureGPU3D, yerel 2D videoyu SBS Full 3D videoya ceviren bir motordur.
+- Hedef kullanim: VR gozlukte sol/sag goze farkli kareler vererek derinlik etkisi olusturmak.
+- Ana pipeline:
+  - Decode (NV12)
+  - Depth + stereo isleme (2W x H SBS uretimi)
+  - Encode
+  - Audio remux (copy veya AAC)
+- UI ve CLI uzerinden calisir.
+
+2) Bugunun ana talepleri
+- Cancel butonu bazen isi durdurmuyordu -> guvenilir, anlik cancel istendi.
+- Pipeline performansi icin 8ms bandindan daha iyi optimizasyon plani istendi.
+- GPU kullanim/fan/watt konusuna bottleneck analizi istendi (kernel disi sureleri ayristirma).
+- Ses aktarimi / encoder / bitrate / container secimi / renk metadata korunumu beklentileri vardi.
+- Son asamada: proje GitHub'a yayin hazir, English-only, minimal dosya seti, cift tikla calisma istendi.
+
+3) Teknik olarak bugun ne yaptik (engine + UI)
+
+3.1) Cancel guvenilirligi (ana fix)
+- UI tarafi:
+  - `Run Transcode` butonuna `trigger_mode="multiple"` eklendi.
+  - `run_state` (is_running, run_id, cancel_event) eklendi.
+  - Ayni butona ikinci tik geldiginde:
+    - `cancel_event.set()`
+    - `engine.abort_active_run()`
+    - UI aninda "Cancel requested..." donuyor.
+- Engine tarafi:
+  - `StereoEngine.abort_active_run()` eklendi.
+  - Aktif run context (backend + abort event) tutuluyor.
+  - Encode future bekleme tam bloklu degil; kisa polling + cancel check ile calisiyor.
+- Backend arayuzu:
+  - `CodecBackend.request_abort()` eklendi.
+
+3.2) FFmpeg backend abort (gercek process kill)
+- FFmpeg backend aktif decode process ve writer process referanslarini tutuyor.
+- `request_abort()` cagrisi:
+  - decode process terminate/kill
+  - writer abort/close
+- Boylesiyle cancel sadece flag set degil, aktif subprocess'lere de uygulanmis oldu.
+
+3.3) Pipeline optimizasyonu
+- Decode prefetch:
+  - Decode ayri thread + bounded queue ile calisiyor.
+  - Decode ve isleme overlap oluyor.
+- Kernel optimizasyonu:
+  - Disparity hesap tek kernel'e alindi (`nv12_disparity_kernel`).
+  - Y ve UV kernel'leri disparity map'i tuketiyor (tekrar hesap azaltildi).
+  - GPU persistent buffer reuse eklendi (resolution bazli).
+  - Mümkunse pinned host output bellek yolu eklendi.
+  - Block/grid tuning: `block=(32, 8, 1)`.
+- Decode cmd tuning:
+  - CUDA path: `-extra_hw_frames 16`
+  - Software path: `-threads 0`
+
+3.4) Metrik ve bottleneck gorunurlugu
+- Frame metric alanlari genisletildi:
+  - `decode_wait_ms`
+  - `encode_wait_ms`
+  - `h2d_ms`
+  - `kernel_compute_ms`
+  - `d2h_ms`
+- CSV/JSON metric ciktilari bu alanlari yazacak sekilde guncellendi.
+- Stage timing warning metninde bu dagilim raporlanir hale geldi.
+
+3.5) Robustluk (encoder/resolution uyumu)
+- Genis SBS output (or. 7680 width) + `h264_nvenc` kombinasyonunda uyumsuzluk riskine karsi precheck eklendi.
+- Auto secimde uygun fallback (`libx264`) deneniyor.
+- Acik encoder seciliyse uyumsuzluk durumunda net hata veriliyor.
+
+4) Bugun yapilan test/dogrulama (engine degisikliklerinden sonra)
+- Test sonucu:
+  - `11 passed, 1 skipped`
+- Eklenen kapsama:
+  - out-of-band `abort_active_run` davranisi
+  - GPU resolution degisiminde buffer reuse davranisi
+
+5) GitHub release hazirligi (son asama)
+
+5.1) Hedef
+- Repo'yu son kullanici odakli, temiz, English-only ve minimum gerekli dosyalarla yayinlanabilir hale getirmek.
+- Kullanici indirdikten sonra cift tikla UI acabilsin.
+
+5.2) Yapilanlar
+- Reponun dagitim yapisi minimal olacak sekilde temizlendi.
+- Sadece ana kod + gerekli config/script dosyalari birakildi:
+  - `src/puregpu3d/...`
+  - `configs/profiles/...`
+  - `scripts/...`
+  - `environment/environment.yml`
+  - `README.md`, `pyproject.toml`, `.gitignore`
+  - `open_project.bat`, `setup_project.bat`, `start_ui.bat`
+- English-only dokumantasyon:
+  - `README.md` bastan yazildi (kurulum, tek tik calistirma, CLI, troubleshooting).
+- Launcher akisi:
+  - `open_project.bat`:
+    1) environment ensure (`bootstrap_conda.ps1 -SkipUpdateIfExists`)
+    2) UI launch
+  - `start_ui.bat` de ayni sekilde env ensure + UI launch yapar.
+- Script iyilestirmeleri:
+  - Conda PATH'te degilse tipik Windows kurulum yollarindan otomatik bulma.
+  - Setup scriptleri daha net hata mesaji verir.
+
+5.3) Release paketinden cikarilanlar
+- test klasorleri
+- outputs / benchmark artifactleri
+- dokuman/PDF/not/cached dosyalar
+- pycache vb gecici dosyalar
+
+6) Bu son release durumunda dogrulama
+- `python -m compileall -q src` basarili.
+- `scripts/run_cli.ps1 --help` basarili.
+- `python -m puregpu3d.cli --help` basarili (conda env icinden).
+- `open_project.bat` ve `run_ui.ps1` calisma cagrilari timeout olmadan baslatma safhasina geliyor
+  (UI surekli process oldugu icin terminal testinde timeout normal).
+
+7) Mevcut bilinen sinirlar
+- `NvCodecBackend` hala scaffold (tam zero-copy path bu release'te yok).
+- Varsayilan guvenli yol FFmpeg backend.
+- GPU codec DLL/import sorunu olursa uygulama ffmpeg yoluyla calismaya devam eder.
+
+8) Kullanici icin hizli calistirma ozeti
+- Miniconda/Anaconda kurulu olmali.
+- Repoyu indir.
+- `open_project.bat` cift tikla.
+- Ilk calistirmada env kurulur, sonraki calistirmalarda daha hizli acilir.
+
+9) Yarin icin checklist
+- 1) `open_project.bat` ile UI ac.
+- 2) Gercek bir video ile run et, cancel'a basin ve anlik durdugunu dogrula.
+- 3) Metrics dosyalarinda decode_wait/encode_wait/h2d/d2h dagilimini kontrol et.
+- 4) 4K + farkli encoder senaryolarini test et (h264/hevc, auto/manual).
+- 5) Istenirse ayri bir development branch'te testleri tekrar geri ekleyip CI kur.
+
+10) Kisa not (today summary)
+- Bugunun en kritik kazanimlari:
+  - Cancel artik gercekten process seviyesinde duruyor.
+  - Pipeline metrikleri artik bottleneck'i daha dogru ayristiriyor.
+  - Repo, son kullaniciya uygun sekilde sade ve GitHub release-ready hale getirildi.

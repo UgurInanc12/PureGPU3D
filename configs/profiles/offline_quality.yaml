@@ -1,0 +1,17 @@
+# Offline quality profile
+codec: h265
+video_encoder: auto
+fps_mode: offline
+sbs_mode: sbs_full
+overflow_policy: block
+buffer_slots: 8
+audio_passthrough: true
+audio_codec: copy
+preserve_color_metadata: true
+backend_preference: ffmpeg
+depth:
+  max_disparity_px: 8
+  depth_strength: 0.65
+  edge_weight: 0.30
+  luma_weight: 0.40
+  vertical_weight: 0.30

@@ -1,0 +1,17 @@
+# Realtime low-latency profile
+codec: h264
+video_encoder: auto
+fps_mode: realtime
+sbs_mode: sbs_full
+overflow_policy: block
+buffer_slots: 6
+audio_passthrough: true
+audio_codec: copy
+preserve_color_metadata: true
+backend_preference: ffmpeg
+depth:
+  max_disparity_px: 5
+  depth_strength: 0.50
+  edge_weight: 0.25
+  luma_weight: 0.45
+  vertical_weight: 0.30

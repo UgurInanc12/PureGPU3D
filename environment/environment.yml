@@ -1,0 +1,18 @@
+name: puregpu3d
+channels:
+  - conda-forge
+  - nvidia
+  - nodefaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy>=1.26
+  - pyyaml>=6.0
+  - typer>=0.12
+  - rich>=13.7
+  - ffmpeg>=6.1
+  - cupy>=13.6
+  - cuda-nvrtc>=12.0
+  - pip:
+      - gradio>=5.0
+      - cuda-python>=12.6

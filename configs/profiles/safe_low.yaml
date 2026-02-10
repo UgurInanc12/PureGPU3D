@@ -1,0 +1,17 @@
+# Safe low-depth profile
+codec: h265
+video_encoder: auto
+fps_mode: offline
+sbs_mode: sbs_full
+overflow_policy: block
+buffer_slots: 6
+audio_passthrough: true
+audio_codec: copy
+preserve_color_metadata: true
+backend_preference: ffmpeg
+depth:
+  max_disparity_px: 6
+  depth_strength: 0.55
+  edge_weight: 0.25
+  luma_weight: 0.45
+  vertical_weight: 0.30
