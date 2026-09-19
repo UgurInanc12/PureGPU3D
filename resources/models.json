@@ -1,0 +1,174 @@
+{
+  "catalog_version": "1.0.0",
+  "generated_at": "2026-09-18T13:00:00Z",
+  "models": [
+    {
+      "id": "DA3-SMALL",
+      "repo_id": "depth-anything/DA3-SMALL",
+      "ui_name": "Small",
+      "revision": "e08cab65ca0ec38e7826075418411ab90cab4da3",
+      "parameters": "0.08B",
+      "role": "Any-view; initial lightweight choice",
+      "category": "general",
+      "license": "Apache-2.0",
+      "license_type": "permissive",
+      "noncommercial_ack_required": false,
+      "license_conflict": false,
+      "conflict_details": null,
+      "files": {
+        "config.json": {
+          "bytes": 1202,
+          "sha256": "a486e29e82b7ab4a7d4cefc1ea4526cfe2ae438a572c8ca98917cfbcde7447d2"
+        },
+        "model.safetensors": {
+          "bytes": 137248940,
+          "sha256": "364492e38a3a06d221ac75da7f6621ada3f2361cd24fde11ba79091e9f40efcf"
+        }
+      }
+    },
+    {
+      "id": "DA3-BASE",
+      "repo_id": "depth-anything/DA3-BASE",
+      "ui_name": "Base",
+      "revision": "f4a6c9b3c95e41c82048423d3493a81ec3fa810e",
+      "parameters": "0.12B",
+      "role": "Any-view; provisional balanced default",
+      "category": "general",
+      "license": "Apache-2.0",
+      "license_type": "permissive",
+      "noncommercial_ack_required": false,
+      "license_conflict": false,
+      "conflict_details": null,
+      "files": {
+        "config.json": {
+          "bytes": 1205,
+          "sha256": "5e34115ebc17bd2d8d43033c5f72e9446ac8833fd61d3fa160b7e67e0bb5b7b5"
+        },
+        "model.safetensors": {
+          "bytes": 541518028,
+          "sha256": "e01067dc1659613083d9145a9a2547ccdbe6ccbbf83c4fe7b3e8a4e2bdae78b5"
+        }
+      }
+    },
+    {
+      "id": "DA3-LARGE-1.1",
+      "repo_id": "depth-anything/DA3-LARGE-1.1",
+      "ui_name": "Large 1.1",
+      "revision": "0e109ae307c5982f319a67cf6f9f99ccdc0ec97c",
+      "parameters": "0.35B",
+      "role": "Any-view",
+      "category": "general",
+      "license": "CONFLICT: GitHub CC BY-NC 4.0 vs HF Apache-2.0",
+      "license_type": "conflict",
+      "noncommercial_ack_required": true,
+      "license_conflict": true,
+      "conflict_details": "GitHub upstream table specifies CC BY-NC 4.0, while Hugging Face model card specifies Apache-2.0. In accordance with license conflict policy, commercial clearance cannot be claimed and non-commercial acknowledgment is required prior to use.",
+      "files": {
+        "config.json": {
+          "bytes": 1213,
+          "sha256": "744dcaf53859490ed92fc6cb98d68d3daf624b8c54533aaf604bdb53f06321f5"
+        },
+        "model.safetensors": {
+          "bytes": 1643843860,
+          "sha256": "739905c423cf0d6ccaf9e61a8401d82ba1ac32d7f4d3ee6dca8f92b377633f64"
+        }
+      }
+    },
+    {
+      "id": "DA3-GIANT-1.1",
+      "repo_id": "depth-anything/DA3-GIANT-1.1",
+      "ui_name": "Giant 1.1",
+      "revision": "72ee9f89ce4e50d704e9d55ee9c646ec8dc25a19",
+      "parameters": "1.15B",
+      "role": "Any-view; larger resource footprint expected",
+      "category": "general",
+      "license": "CC BY-NC 4.0",
+      "license_type": "noncommercial",
+      "noncommercial_ack_required": true,
+      "license_conflict": false,
+      "conflict_details": null,
+      "files": {
+        "config.json": {
+          "bytes": 1880,
+          "sha256": "74626a50d6dee2a11820291a4305c1a34aa5adc4f7260908bbdbc9a939ba8e93"
+        },
+        "model.safetensors": {
+          "bytes": 5422814644,
+          "sha256": "1e47a08338ca73a6d6a21d37fd060b26b993b672bc6ddf6295fe474df2592001"
+        }
+      }
+    },
+    {
+      "id": "DA3NESTED-GIANT-LARGE-1.1",
+      "repo_id": "depth-anything/DA3NESTED-GIANT-LARGE-1.1",
+      "ui_name": "Nested Giant + Large 1.1",
+      "revision": "b2359bdf726fb44ef62acca04d629dcf158053e7",
+      "parameters": "1.40B",
+      "role": "Any-view plus metric scaling model",
+      "category": "general",
+      "license": "CC BY-NC 4.0",
+      "license_type": "noncommercial",
+      "noncommercial_ack_required": true,
+      "license_conflict": false,
+      "conflict_details": null,
+      "files": {
+        "config.json": {
+          "bytes": 3113,
+          "sha256": "09adf89474017e717bc05aa86fd3a378708ba8914b036d61874eced328069468"
+        },
+        "model.safetensors": {
+          "bytes": 6759558100,
+          "sha256": "8ebe871a022ed58d2fc8fdfb2ebdb31d57b60fe39611c849095851a7b7c6020c"
+        }
+      }
+    },
+    {
+      "id": "DA3MONO-LARGE",
+      "repo_id": "depth-anything/DA3MONO-LARGE",
+      "ui_name": "Mono Large",
+      "revision": "f465978e618db8cc79c83b8bbf24964857db1875",
+      "parameters": "0.35B",
+      "role": "Single-image relative depth specialist",
+      "category": "specialist",
+      "license": "Apache-2.0",
+      "license_type": "permissive",
+      "noncommercial_ack_required": false,
+      "license_conflict": false,
+      "conflict_details": null,
+      "files": {
+        "config.json": {
+          "bytes": 845,
+          "sha256": "649809acdfe99631293430bfb8bcd85620a1bba47bb4e27689bd204c645a4204"
+        },
+        "model.safetensors": {
+          "bytes": 1336734448,
+          "sha256": "7a799a7f95eb8d4c404c2ca8be3dc3276b350a417ddc4420db72ba850cc0e960"
+        }
+      }
+    },
+    {
+      "id": "DA3METRIC-LARGE",
+      "repo_id": "depth-anything/DA3METRIC-LARGE",
+      "ui_name": "Metric Large",
+      "revision": "4010e39f3634a45bc60553321fb49fb760bd594e",
+      "parameters": "0.35B",
+      "role": "Single-image metric-depth specialist",
+      "category": "specialist",
+      "license": "Apache-2.0",
+      "license_type": "permissive",
+      "noncommercial_ack_required": false,
+      "license_conflict": false,
+      "conflict_details": null,
+      "files": {
+        "config.json": {
+          "bytes": 847,
+          "sha256": "a336f3e76fe375aaae17a9aed9130c9f2aa061535d317ec57dcb2f1f02e1dd53"
+        },
+        "model.safetensors": {
+          "bytes": 1336734448,
+          "sha256": "bbea5b0b3ee389849cffa7ddae89de064a90abd2b055fc5aa99aac68db324776"
+        }
+      }
+    }
+  ]
+}

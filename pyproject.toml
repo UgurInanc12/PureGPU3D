@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "puregpu3d"
-version = "0.1.0"
+version = "1.0.1"
 description = "Pure-GPU oriented 2D to 3D SBS video engine"
 readme = "README.md"
 requires-python = ">=3.11"

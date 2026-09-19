@@ -1,69 +1,62 @@
 # PureGPU3D
 
-PureGPU3D is a Windows-first 2D-to-3D video converter that generates **SBS Full** output (`2W x H`) for VR playback.
+Convert ordinary 2D videos into **Full Side-by-Side stereoscopic video** for VR headsets and compatible 3D players. Depth Anything 3 estimates scene depth; separate left-eye and right-eye views provide a natural sense of depth.
 
-It includes:
-- FFmpeg-based decode/encode/remux pipeline
-- CuPy CUDA depth kernel path (with safe CPU fallback)
-- Audio passthrough or AAC re-encode
-- Container selection (`mp4`, `mkv`, `mov`)
-- Encoder and bitrate selection
-- Color metadata passthrough
-- Gradio web UI + CLI
+## Download and run
 
-## Requirements
-- Windows 10/11
-- Miniconda or Anaconda installed
-- NVIDIA GPU recommended (CUDA path), but CPU fallback is supported
+Download the Windows portable archive from [Releases](https://github.com/UgurInanc12/PureGPU3D/releases/latest), extract the **entire folder**, and launch `PureGPU3D.exe`. Keep the accompanying files together.
 
-## One-Click Start (Recommended)
-1. Download/clone this repository.
-2. Double-click `open_project.bat`.
+No separate Python, Conda, FFmpeg or CUDA Toolkit installation is needed. A compatible NVIDIA driver is required for GPU acceleration. Internet access is needed when downloading a model for the first time.
 
-`open_project.bat` will:
-- Create the `puregpu3d` Conda environment on first run
-- Launch the web UI
+The archive exceeds GitHub's per-file upload limit. Download both `.zip.001` and `.zip.002` assets into the same folder. Open `.001` with 7-Zip, or join them in Windows Command Prompt and extract the resulting ZIP:
 
-On later runs, it skips heavy environment updates and starts faster.
-
-## First-Time Setup Only (Optional)
-If you want to prepare the environment manually:
-- Double-click `setup_project.bat`
-
-Then launch UI:
-- Double-click `start_ui.bat`
-
-## CLI Usage
-Run from PowerShell:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_cli.ps1 --help
+```bat
+copy /b PureGPU3D-v1.0.1-windows-x64.zip.001+PureGPU3D-v1.0.1-windows-x64.zip.002 PureGPU3D-v1.0.1-windows-x64.zip
 ```
 
-Example:
+1. Select a source video and output location.
+2. Choose a model and depth processing scale.
+3. Leave the pipeline on **Auto**, or explicitly select **GPU** or **Compatible**.
+4. Start conversion. Open the exported video in your headset player using **SBS / left-right** mode.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_cli.ps1 transcode `
-  --input "D:\video\input.mp4" `
-  --output "D:\video\output_sbs.mp4" `
-  --codec h265 `
-  --video-encoder auto `
-  --video-bitrate-mbps 35 `
-  --audio-codec copy
-```
+This produces stereoscopic flat-screen video, not a 180-degree or 360-degree scene.
 
-## Common Notes
-- If NVENC/NVDEC is not available, FFmpeg software paths are used automatically.
-- `PyNvVideoCodec` is optional in this release; FFmpeg backend is the default stable path.
-- Cancel in UI performs immediate abort and cleans temporary output.
+## Features
 
-## Project Layout
-- `src/puregpu3d`: main application code
-- `configs/profiles`: runtime profiles
-- `scripts`: setup and launch scripts
-- `environment/environment.yml`: Conda environment definition
+- **Full SBS:** 1920x1080 input becomes 3840x1080 output, preserving each eye's source resolution.
+- **Model selection:** DA3 Small, Base, Mono Large and Metric Large inference support. Missing weights download into the app's `models` folder. Model-specific license acknowledgments apply.
+- **Independent depth scale:** 1/4, 1/2 or 1/1. Padding accommodates model patch dimensions without stretching the image. Export resolution stays unchanged.
+- **GPU pipeline:** NVDEC decoding, CUDA depth estimation and stereo processing, GPU temporal stabilization, and NVENC HEVC encoding.
+- **Compatible pipeline:** FFmpeg decoding with PyTorch processing and hardware encoding when available. Auto reports its selected route; explicitly requesting GPU does not silently fall back.
+- **Safe export:** source/output collision protection, temporary staging, exact output frame validation, audio stream copying and cancellation cleanup.
+- **Desktop interface:** dark theme, scrollable settings, visible progress and restart-free retry after errors.
 
-## Troubleshooting
-- If Conda is not detected, install Miniconda and reopen the terminal/session.
-- If GPU codec bindings fail with a DLL import error, the app still works with FFmpeg backend.
-- If `h264_nvenc` fails on very wide SBS output (for example 7680 width), switch to `h265/hevc_nvenc` or `libx264`.
+## Requirements and limits
+
+Windows x64 is the verified release platform. GPU testing used an RTX 3090; speed and memory needs depend on model, scale, resolution and hardware.
+
+The current desktop path targets **8-bit SDR, constant-frame-rate video**, even dimensions and unrotated square pixels. HDR and VFR inputs are rejected. Audio copy support includes AAC, MP3, AC-3 and E-AC-3. MP4 is the verified export container.
+
+Depth is estimated, not recovered ground truth. Occluded backgrounds, fine edges and fast motion can produce artifacts. Higher depth resolution is not a guarantee of better results. Start with Small, 1/2 scale and the default depth strength; reduce strength if viewing feels uncomfortable. Headset comfort and feature-length reliability are not universally certified.
+
+## v1.0.1
+
+Adds the DA3 desktop workflow, selectable depth scales and GPU video processing. Fixes missing packaged GPU codec modules, cramped controls, retry after failure, and duplicate frames caused by FFmpeg synchronization. Audio/video start offsets are preserved.
+
+A verified 755-frame 1080p clip produced 755-frame, 3840x1080, 25 FPS output with audio through both frozen GPU and Compatible routes. This is a tested example, not a throughput guarantee.
+
+## Development
+
+- `src/puregpu3d/desktop`: PySide6 interface and controller
+- `src/puregpu3d/runtime`: worker process and protocol
+- `src/puregpu3d/models`: model catalog, downloads and DA3 adapters
+- `src/puregpu3d/video` and `stereo`: conversion and stereo processing
+- `packaging/PureGPU3D.spec`: portable application packaging
+- `scripts/build_desktop.py`: Windows build entry point
+- `tests`: model, desktop, media, GPU and packaging checks
+
+The older Gradio/CLI launchers remain in the repository but are not the packaged desktop workflow. Building from source requires the development dependencies and the pinned DA3 source checkout; see [development setup](docs/DEVELOPMENT.md).
+
+## Third-party components
+
+[Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3), PyTorch, PySide6, FFmpeg and NVIDIA PyNvVideoCodec retain their respective licenses. Model weights are downloaded separately and are not included in the portable archive. Bundled FFmpeg build provenance is in `bin/PROVENANCE.txt`. Review third-party and model terms before redistribution or commercial use.

@@ -1,0 +1,32 @@
+# Virtual environments and local packages
+.venv/
+
+# Byte-compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large binary model checkpoints
+models/**/*.safetensors
+models/**/*.partial
+
+# Build and packaging output
+build/
+dist/
+*.spec.bak
+
+# Local assets, evidence, user state and secrets
+/models/
+/data/
+/output/
+.hermes/
+dist-next/
+release-assets/
+*.egg-info/
+.pytest_cache/
+.env
+.env.*
+uv.lock
+third_party/
+scripts/verify_reported_clip.py
+docs/verification/

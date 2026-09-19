@@ -1,0 +1,3 @@
+# PyNvVideoCodec Probe Dependencies (Phase P3)
+# Official NVIDIA Video Codec Python bindings
+pynvvideocodec==2.2.3
