@@ -11,7 +11,7 @@ No separate Python, Conda, FFmpeg or CUDA Toolkit installation is needed. A comp
 The archive exceeds GitHub's per-file upload limit. Download both `.zip.001` and `.zip.002` assets into the same folder. Open `.001` with 7-Zip, or join them in Windows Command Prompt and extract the resulting ZIP:
 
 ```bat
-copy /b PureGPU3D-v1.0.1-windows-x64.zip.001+PureGPU3D-v1.0.1-windows-x64.zip.002 PureGPU3D-v1.0.1-windows-x64.zip
+copy /b PureGPU3D-v1.0.2-windows-x64.zip.001+PureGPU3D-v1.0.2-windows-x64.zip.002 PureGPU3D-v1.0.2-windows-x64.zip
 ```
 
 1. Select a source video and output location.
@@ -39,7 +39,13 @@ The current desktop path targets **8-bit SDR, constant-frame-rate video**, even 
 
 Depth is estimated, not recovered ground truth. Occluded backgrounds, fine edges and fast motion can produce artifacts. Higher depth resolution is not a guarantee of better results. Start with Small, 1/2 scale and the default depth strength; reduce strength if viewing feels uncomfortable. Headset comfort and feature-length reliability are not universally certified.
 
-## v1.0.1
+## v1.0.2
+
+GPU depth batching is selectable from **1 to 20** (default 1). Frames remain independent during inference and are processed in order by the temporal filter. Batch 5 is a useful starting point; larger batches need more VRAM and are not always faster. Batch sizes above 1 require the GPU pipeline.
+
+Desktop depth strength now defaults to **0.001**, with a **0.010 maximum** and **0.001 steps**. On one 755-frame 1080p clip, Small at half scale measured 7.80 FPS with batch 1 and 10.28 FPS with batch 5. These are single-run end-to-end measurements, not universal performance guarantees.
+
+### Previous desktop improvements
 
 Adds the DA3 desktop workflow, selectable depth scales and GPU video processing. Fixes missing packaged GPU codec modules, cramped controls, retry after failure, and duplicate frames caused by FFmpeg synchronization. Audio/video start offsets are preserved.
 

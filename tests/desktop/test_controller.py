@@ -24,7 +24,7 @@ class TestDesktopController(unittest.TestCase):
     def test_initial_state(self) -> None:
         self.assertEqual(self.controller.state, DesktopState.IDLE)
         self.assertEqual(self.controller.selected_model_id, "DA3-SMALL")
-        self.assertAlmostEqual(self.controller.disparity_strength, 0.03)
+        self.assertAlmostEqual(self.controller.disparity_strength, 0.001)
         self.assertAlmostEqual(self.controller.q_screen, 0.6)
         self.assertIsNone(self.controller.input_path)
         self.assertIsNone(self.controller.output_path)

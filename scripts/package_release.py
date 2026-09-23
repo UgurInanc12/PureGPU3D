@@ -8,7 +8,7 @@ root = Path(__file__).resolve().parents[1]
 source = root / 'dist/PureGPU3D'
 target = root / 'release-assets'
 target.mkdir(exist_ok=True)
-archive = target / 'PureGPU3D-v1.0.1-windows-x64.zip'
+archive = target / 'PureGPU3D-v1.0.2-windows-x64.zip'
 manifest = {}
 with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as out:
     for path in sorted(source.rglob('*')):
@@ -22,7 +22,7 @@ with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslev
         manifest[name] = hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()
     out.writestr('PureGPU3D/models/', '')
     out.write(root / 'README.md', 'PureGPU3D/README.md')
-    out.writestr('PureGPU3D/RELEASE.txt', 'PureGPU3D v1.0.1\nPortable Windows x64 desktop build. Extract the entire folder.\n')
+    out.writestr('PureGPU3D/RELEASE.txt', 'PureGPU3D v1.0.2\nPortable Windows x64 desktop build. Extract the entire folder.\n')
 (target / 'build-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
 with archive.open('rb') as f:
     digest = hashlib.file_digest(f, 'sha256').hexdigest()

@@ -64,6 +64,7 @@ class DesktopController(QObject):
     model_changed = Signal(str, dict)  # model_id, info dict
     depth_scale_changed = Signal(str)  # scale string, e.g. "1/2"
     pipeline_route_changed = Signal(str)  # "auto", "gpu", "compatible"
+    batch_size_changed = Signal(int)  # 1..20
     status_updated = Signal(str, str)  # stage, message
     download_progress = Signal(int, int, float, str)  # downloaded_bytes, total_bytes, percent, filename
     conversion_progress = Signal(int, int, float, float, object)  # frame, total, percent, fps, eta
@@ -82,10 +83,11 @@ class DesktopController(QObject):
         self._output_path: Optional[Path] = None
         self._input_probe: Optional[VideoProbeResult] = None
         self._selected_model_id: str = "DA3-SMALL"
-        self._disparity_strength: float = 0.03
+        self._disparity_strength: float = 0.001
         self._q_screen: float = 0.6
         self._depth_scale: str = "1/2"
         self._pipeline_route: str = "auto"
+        self._batch_size: int = 1
         self._enable_temporal_stabilization: bool = True
         self._overwrite: bool = False
         self._license_acknowledged: bool = False
@@ -136,6 +138,10 @@ class DesktopController(QObject):
     @property
     def pipeline_route(self) -> str:
         return self._pipeline_route
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
 
     @property
     def enable_temporal_stabilization(self) -> bool:
@@ -203,7 +209,7 @@ class DesktopController(QObject):
 
     def set_disparity_strength(self, strength: float) -> None:
         """Update disparity strength factor."""
-        self._disparity_strength = max(0.0, float(strength))
+        self._disparity_strength = min(0.01, max(0.0, float(strength)))
 
     def set_q_screen(self, q_screen: float) -> None:
         """Update zero parallax screen depth."""
@@ -226,6 +232,18 @@ class DesktopController(QObject):
         if self._pipeline_route != norm:
             self._pipeline_route = norm
             self.pipeline_route_changed.emit(self._pipeline_route)
+
+    def set_batch_size(self, batch_size: int) -> None:
+        """Update batch size (integer 1..20)."""
+        if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+            raise TypeError(
+                f"batch_size must be an integer, got {type(batch_size).__name__} ({batch_size!r})"
+            )
+        if batch_size < 1 or batch_size > 20:
+            raise ValueError(f"batch_size must be an integer between 1 and 20, got {batch_size}")
+        if self._batch_size != batch_size:
+            self._batch_size = batch_size
+            self.batch_size_changed.emit(self._batch_size)
 
     def set_enable_temporal_stabilization(self, enabled: bool) -> None:
         """Update temporal depth stabilization setting."""
@@ -388,6 +406,7 @@ class DesktopController(QObject):
             cancel_file=str(self._cancel_file),
             ffmpeg_path=str(ffmpeg_bin),
             ffprobe_path=str(ffprobe_bin),
+            batch_size=self._batch_size,
         )
 
         with open(self._command_file, "w", encoding="utf-8") as f:

@@ -285,13 +285,13 @@ class TestDesktopRealConversion(unittest.TestCase):
         self.assertTrue(window.convert_btn.isEnabled())
 
         # Test depth strength controls synchronization
-        window.strength_spin.setValue(0.050)
-        self.assertEqual(window.strength_slider.value(), 50)
-        self.assertAlmostEqual(controller.disparity_strength, 0.050)
+        window.strength_spin.setValue(0.005)
+        self.assertEqual(window.strength_slider.value(), 5)
+        self.assertAlmostEqual(controller.disparity_strength, 0.005)
 
-        window.strength_slider.setValue(25)
-        self.assertAlmostEqual(window.strength_spin.value(), 0.025)
-        self.assertAlmostEqual(controller.disparity_strength, 0.025)
+        window.strength_slider.setValue(2)
+        self.assertAlmostEqual(window.strength_spin.value(), 0.002)
+        self.assertAlmostEqual(controller.disparity_strength, 0.002)
 
 
 if __name__ == "__main__":

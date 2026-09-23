@@ -133,6 +133,8 @@ class GpuConversionResult:
     validation_overhead_s: float = 0.0
     mean_temporal_ms: float = 0.0
     scheduling: str = "sequential"
+    batch_size: int = 1
+    peak_memory_mb: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -226,6 +228,7 @@ def convert_video_gpu(
     compute_diagnostics: bool = False,
     scheduling: str = "sequential",
     prefetch_slots: int = 3,
+    batch_size: int = 1,
 ) -> GpuConversionResult:
     """Execute real GPU-resident NVDEC -> DA3 infer_tensor -> depth-aware stereo -> NVENC conversion.
 
@@ -233,6 +236,14 @@ def convert_video_gpu(
     are generated from true DA3 depth maps via depth-aware forward splatting.
     """
     wall_start = time.perf_counter()
+
+    # 0. Upfront batch_size validation
+    if isinstance(batch_size, bool) or not isinstance(batch_size, int):
+        raise TypeError(
+            f"batch_size must be an integer, got {type(batch_size).__name__} ({batch_size!r})"
+        )
+    if batch_size < 1 or batch_size > 20:
+        raise ValueError(f"batch_size must be an integer between 1 and 20, got {batch_size}")
 
     resolved_input = Path(input_path).resolve()
     resolved_output = Path(output_path).resolve()
@@ -251,6 +262,12 @@ def convert_video_gpu(
         else:
             gpu_id = torch.cuda.current_device() if torch.cuda.is_available() else gpu_id
             target_device = torch.device(f"cuda:{gpu_id}")
+
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.reset_peak_memory_stats(gpu_id)
+        except Exception:
+            pass
 
     # 2. System support preflight for target GPU
     supported, reason = check_gpu_pipeline_support(gpu_id=gpu_id)
@@ -287,6 +304,11 @@ def convert_video_gpu(
             raise TypeError(
                 f"Model adapter must provide infer_tensor() for GPU-resident pipeline, got {type(model)}."
             )
+
+    if batch_size > 1 and not hasattr(adapter, "infer_tensor_batch"):
+        raise AttributeError(
+            f"Model adapter does not provide infer_tensor_batch() for GPU-resident batching, got {type(adapter)}."
+        )
 
     if hasattr(adapter, "device"):
         adapter_dev = _canonicalize_cuda_device(adapter.device)
@@ -326,6 +348,10 @@ def convert_video_gpu(
 
     notes.append(f"GPU pipeline: NVDEC -> PyTorch CUDA -> NVENC ({codec.upper()}) on {torch.cuda.get_device_name(target_device)}.")
     notes.append(f"Output geometry: Full SBS {out_w}x{out_h} at rational {fps_frac.numerator}/{fps_frac.denominator} fps.")
+    if batch_size > 1:
+        notes.append(f"Batch size: {batch_size} (independent-frame batching).")
+    else:
+        notes.append("Batch size: 1 (single-frame processing).")
     valid_schedulers = {"sequential", "pipelined", "prefetch", "overlap"}
     if scheduling not in valid_schedulers:
         raise ValueError(
@@ -462,158 +488,337 @@ def convert_video_gpu(
                     alpha = torch.full((out_h, out_w, 1), 255, dtype=torch.uint8, device=target_device)
                     alpha.record_stream(stream)
 
-                    for idx in range(total_frames):
-                        if cancel_callback is not None and cancel_callback():
-                            raise ConversionCancelledError("Conversion aborted: cancellation requested by caller.")
+                    if batch_size == 1:
+                        for idx in range(total_frames):
+                            if cancel_callback is not None and cancel_callback():
+                                raise ConversionCancelledError("Conversion aborted: cancellation requested by caller.")
 
-                        slot_idx: Optional[int] = None
-                        if is_pipelined and ring is not None:
-                            frame_item = ring.acquire_next_frame()
-                            if frame_item is None:
-                                raise ConversionError(
-                                    f"Premature end of decode prefetch ring at frame {idx}/{total_frames}."
-                                )
-                            f_idx, slot_idx, plane_ptr, raw_ptr, ptrs_match, dec_wall_s = frame_item
-                            total_decode_time_s += dec_wall_s
-                            slot = ring.slots[slot_idx]
-                            stream.wait_event(slot.ready_event)
-                            slot.tensor.record_stream(stream)
-                            t_in = slot.tensor
+                            slot_idx: Optional[int] = None
+                            if is_pipelined and ring is not None:
+                                frame_item = ring.acquire_next_frame()
+                                if frame_item is None:
+                                    raise ConversionError(
+                                        f"Premature end of decode prefetch ring at frame {idx}/{total_frames}."
+                                    )
+                                f_idx, slot_idx, plane_ptr, raw_ptr, ptrs_match, dec_wall_s = frame_item
+                                total_decode_time_s += dec_wall_s
+                                slot = ring.slots[slot_idx]
+                                stream.wait_event(slot.ready_event)
+                                slot.tensor.record_stream(stream)
+                                t_in = slot.tensor
 
-                            if len(pointer_traces) < max_trace_frames:
-                                pointer_traces.append(
-                                    InteropPointerTrace(
-                                        frame_index=f_idx,
-                                        plane_ptr=plane_ptr,
-                                        tensor_ptr=raw_ptr,
-                                        ptrs_match=ptrs_match,
-                                        shape=list(t_in.shape),
-                                        dtype=str(t_in.dtype),
-                                        device=str(t_in.device),
-                                    ).to_dict()
-                                )
-                        else:
-                            # Stage 1: NVDEC Decode
-                            t_d0 = time.perf_counter()
-                            dec_frame: Any = dec[idx]
-                            t_d1 = time.perf_counter()
-                            total_decode_time_s += (t_d1 - t_d0)
-
-                            # Stage 2: DLPack Zero-Copy Interop & Pointer Verification
-                            plane_ptr = int(dec_frame.GetPtrToPlane(0))
-                            t_raw = torch.from_dlpack(dec_frame)
-                            raw_ptr = int(t_raw.data_ptr())
-                            t_raw.record_stream(stream)
-
-                            if len(pointer_traces) < max_trace_frames:
-                                pointer_traces.append(
-                                    InteropPointerTrace(
-                                        frame_index=idx,
-                                        plane_ptr=plane_ptr,
-                                        tensor_ptr=raw_ptr,
-                                        ptrs_match=(plane_ptr == raw_ptr),
-                                        shape=list(t_raw.shape),
-                                        dtype=str(t_raw.dtype),
-                                        device=str(t_raw.device),
-                                    ).to_dict()
-                                )
-
-                            # Surface reuse safety: clone tensor memory so decoder surface can be reused
-                            t_in = t_raw.clone() if safe_clone else t_raw
-                            t_in.record_stream(stream)
-
-                        # Stage 3: Real DA3 Depth Inference (GPU VRAM)
-                        t_m0 = time.perf_counter()
-                        depth_res = adapter.infer_tensor(
-                            t_in,
-                            depth_scale=canon_depth_scale,
-                            return_original_size=True,
-                            autocast=True,
-                            timing=False,  # timing=False avoids host synchronizations
-                        )
-                        t_m1 = time.perf_counter()
-                        total_depth_time_s += (t_m1 - t_m0)
-
-                        # Stage 3b: GPU Temporal Depth Stabilization & Online Normalization
-                        final_depth = depth_res.depth
-                        norm_bounds: Optional[Union[Tuple[float, float], Tuple[torch.Tensor, torch.Tensor], Any]] = None
-                        if stabilizer is not None:
-                            t_t0 = time.perf_counter()
-                            raw_d = depth_res.depth_raw
-                            h_raw, w_raw = raw_d.shape[-2:]
-
-                            # Scale RGB on GPU to match depth_raw shape if necessary
-                            if t_in.shape[0] != h_raw or t_in.shape[1] != w_raw:
-                                t_in_chw = t_in.permute(2, 0, 1).unsqueeze(0).float()
-                                rgb_scaled = F.interpolate(t_in_chw, size=(h_raw, w_raw), mode="area")
+                                if len(pointer_traces) < max_trace_frames:
+                                    pointer_traces.append(
+                                        InteropPointerTrace(
+                                            frame_index=f_idx,
+                                            plane_ptr=plane_ptr,
+                                            tensor_ptr=raw_ptr,
+                                            ptrs_match=ptrs_match,
+                                            shape=list(t_in.shape),
+                                            dtype=str(t_in.dtype),
+                                            device=str(t_in.device),
+                                        ).to_dict()
+                                    )
                             else:
-                                rgb_scaled = t_in
+                                # Stage 1: NVDEC Decode
+                                t_d0 = time.perf_counter()
+                                dec_frame: Any = dec[idx]
+                                t_d1 = time.perf_counter()
+                                total_decode_time_s += (t_d1 - t_d0)
 
-                            temp_res = stabilizer.process_frame(
-                                frame_rgb=rgb_scaled,
-                                raw_depth=raw_d,
+                                # Stage 2: DLPack Zero-Copy Interop & Pointer Verification
+                                plane_ptr = int(dec_frame.GetPtrToPlane(0))
+                                t_raw = torch.from_dlpack(dec_frame)
+                                raw_ptr = int(t_raw.data_ptr())
+                                t_raw.record_stream(stream)
+
+                                if len(pointer_traces) < max_trace_frames:
+                                    pointer_traces.append(
+                                        InteropPointerTrace(
+                                            frame_index=idx,
+                                            plane_ptr=plane_ptr,
+                                            tensor_ptr=raw_ptr,
+                                            ptrs_match=(plane_ptr == raw_ptr),
+                                            shape=list(t_raw.shape),
+                                            dtype=str(t_raw.dtype),
+                                            device=str(t_raw.device),
+                                        ).to_dict()
+                                    )
+
+                                # Surface reuse safety: clone tensor memory so decoder surface can be reused
+                                t_in = t_raw.clone() if safe_clone else t_raw
+                                t_in.record_stream(stream)
+
+                            # Stage 3: Real DA3 Depth Inference (GPU VRAM)
+                            t_m0 = time.perf_counter()
+                            depth_res = adapter.infer_tensor(
+                                t_in,
+                                depth_scale=canon_depth_scale,
+                                return_original_size=True,
+                                autocast=True,
+                                timing=False,  # timing=False avoids host synchronizations
+                            )
+                            t_m1 = time.perf_counter()
+                            total_depth_time_s += (t_m1 - t_m0)
+
+                            # Stage 3b: GPU Temporal Depth Stabilization & Online Normalization
+                            final_depth = depth_res.depth
+                            norm_bounds: Optional[Union[Tuple[float, float], Tuple[torch.Tensor, torch.Tensor], Any]] = None
+                            if stabilizer is not None:
+                                t_t0 = time.perf_counter()
+                                raw_d = depth_res.depth_raw
+                                h_raw, w_raw = raw_d.shape[-2:]
+
+                                # Scale RGB on GPU to match depth_raw shape if necessary
+                                if t_in.shape[0] != h_raw or t_in.shape[1] != w_raw:
+                                    t_in_chw = t_in.permute(2, 0, 1).unsqueeze(0).float()
+                                    rgb_scaled = F.interpolate(t_in_chw, size=(h_raw, w_raw), mode="area")
+                                else:
+                                    rgb_scaled = t_in
+
+                                temp_res = stabilizer.process_frame(
+                                    frame_rgb=rgb_scaled,
+                                    raw_depth=raw_d,
+                                    compute_diagnostics=compute_diagnostics,
+                                )
+
+                                # Upscale stabilized depth back onto full-resolution geometry
+                                if (h_raw, w_raw) != (in_h, in_w):
+                                    final_depth = F.interpolate(
+                                        temp_res.depth.unsqueeze(0).unsqueeze(0),
+                                        size=(in_h, in_w),
+                                        mode="bilinear",
+                                        align_corners=False,
+                                    ).squeeze(0).squeeze(0)
+                                else:
+                                    final_depth = temp_res.depth
+
+                                final_depth.record_stream(stream)
+                                norm_bounds = temp_res.normalization_bounds
+                                t_t1 = time.perf_counter()
+                                total_temporal_time_s += (t_t1 - t_t0)
+
+                            # Stage 4: Depth-Aware Stereoscopic Rendering (GPU VRAM)
+                            t_s0 = time.perf_counter()
+                            stereo_res = render_stereo_frame(
+                                image=t_in,
+                                depth=final_depth,
+                                config=stereo_config,
+                                device=target_device,
+                                return_numpy=False,
+                                output_uint8=True,
+                                normalization_bounds=norm_bounds,
                                 compute_diagnostics=compute_diagnostics,
                             )
+                            t_s1 = time.perf_counter()
+                            total_stereo_time_s += (t_s1 - t_s0)
 
-                            # Upscale stabilized depth back onto full-resolution geometry
-                            if (h_raw, w_raw) != (in_h, in_w):
-                                final_depth = F.interpolate(
-                                    temp_res.depth.unsqueeze(0).unsqueeze(0),
-                                    size=(in_h, in_w),
-                                    mode="bilinear",
-                                    align_corners=False,
-                                ).squeeze(0).squeeze(0)
-                            else:
-                                final_depth = temp_res.depth
+                            if is_pipelined and ring is not None and slot_idx is not None:
+                                ring.release_slot(slot_idx, stream)
 
-                            final_depth.record_stream(stream)
-                            norm_bounds = temp_res.normalization_bounds
-                            t_t1 = time.perf_counter()
-                            total_temporal_time_s += (t_t1 - t_t0)
+                            # Stage 5: Full SBS 4-channel composition and NVENC Encode
+                            t_e0 = time.perf_counter()
+                            sbs_color = stereo_res.sbs_color
+                            if not isinstance(sbs_color, torch.Tensor):
+                                raise TypeError(f"Expected sbs_color to be torch.Tensor, got {type(sbs_color)}")
+                            sbs_color.record_stream(stream)
+                            t_enc = torch.cat([sbs_color, alpha], dim=2)  # [H, 2W, 4] ABGR
+                            t_enc.record_stream(stream)
 
-                        # Stage 4: Depth-Aware Stereoscopic Rendering (GPU VRAM)
-                        t_s0 = time.perf_counter()
-                        stereo_res = render_stereo_frame(
-                            image=t_in,
-                            depth=final_depth,
-                            config=stereo_config,
-                            device=target_device,
-                            return_numpy=False,
-                            output_uint8=True,
-                            normalization_bounds=norm_bounds,
-                            compute_diagnostics=compute_diagnostics,
-                        )
-                        t_s1 = time.perf_counter()
-                        total_stereo_time_s += (t_s1 - t_s0)
+                            pkts = enc.Encode(t_enc)
+                            for p in pkts:
+                                muxer.MuxVideoPacket(p["data"], p["picture_type"], p["timestamp"])
+                            t_e1 = time.perf_counter()
+                            total_encode_time_s += (t_e1 - t_e0)
 
-                        if is_pipelined and ring is not None and slot_idx is not None:
-                            ring.release_slot(slot_idx, stream)
+                            processed_count += 1
+                            if progress_callback is not None:
+                                try:
+                                    progress_callback(processed_count, total_frames)
+                                except (ConversionCancelledError, TransactionCancelledError, InterruptedError):
+                                    raise
+                                except Exception as cb_err:
+                                    if "cancel" in type(cb_err).__name__.lower() or "cancel" in str(cb_err).lower():
+                                        raise ConversionCancelledError(f"Conversion cancelled by progress callback: {cb_err}") from cb_err
+                                    logger.warning("Non-fatal exception in progress_callback ignored: %s", cb_err)
+                    else:
+                        # Batched path (batch_size > 1)
+                        for batch_start in range(0, total_frames, batch_size):
+                            batch_end = min(batch_start + batch_size, total_frames)
+                            group_size = batch_end - batch_start
+                            batch_tensors: List[torch.Tensor] = []
 
-                        # Stage 5: Full SBS 4-channel composition and NVENC Encode
-                        t_e0 = time.perf_counter()
-                        sbs_color = stereo_res.sbs_color
-                        if not isinstance(sbs_color, torch.Tensor):
-                            raise TypeError(f"Expected sbs_color to be torch.Tensor, got {type(sbs_color)}")
-                        sbs_color.record_stream(stream)
-                        t_enc = torch.cat([sbs_color, alpha], dim=2)  # [H, 2W, 4] ABGR
-                        t_enc.record_stream(stream)
+                            for frame_idx in range(batch_start, batch_end):
+                                if cancel_callback is not None and cancel_callback():
+                                    raise ConversionCancelledError("Conversion aborted: cancellation requested by caller.")
 
-                        pkts = enc.Encode(t_enc)
-                        for p in pkts:
-                            muxer.MuxVideoPacket(p["data"], p["picture_type"], p["timestamp"])
-                        t_e1 = time.perf_counter()
-                        total_encode_time_s += (t_e1 - t_e0)
+                                if is_pipelined and ring is not None:
+                                    frame_item = ring.acquire_next_frame()
+                                    if frame_item is None:
+                                        raise ConversionError(
+                                            f"Premature end of decode prefetch ring at frame {frame_idx}/{total_frames}."
+                                        )
+                                    f_idx, slot_idx, plane_ptr, raw_ptr, ptrs_match, dec_wall_s = frame_item
+                                    total_decode_time_s += dec_wall_s
+                                    slot = ring.slots[slot_idx]
+                                    stream.wait_event(slot.ready_event)
+                                    slot.tensor.record_stream(stream)
 
-                        processed_count += 1
-                        if progress_callback is not None:
-                            try:
-                                progress_callback(processed_count, total_frames)
-                            except (ConversionCancelledError, TransactionCancelledError, InterruptedError):
-                                raise
-                            except Exception as cb_err:
-                                if "cancel" in type(cb_err).__name__.lower() or "cancel" in str(cb_err).lower():
-                                    raise ConversionCancelledError(f"Conversion cancelled by progress callback: {cb_err}") from cb_err
-                                logger.warning("Non-fatal exception in progress_callback ignored: %s", cb_err)
+                                    if len(pointer_traces) < max_trace_frames:
+                                        pointer_traces.append(
+                                            InteropPointerTrace(
+                                                frame_index=f_idx,
+                                                plane_ptr=plane_ptr,
+                                                tensor_ptr=raw_ptr,
+                                                ptrs_match=ptrs_match,
+                                                shape=list(slot.tensor.shape),
+                                                dtype=str(slot.tensor.dtype),
+                                                device=str(slot.tensor.device),
+                                            ).to_dict()
+                                        )
+
+                                    # Surface reuse safety: clone tensor memory into owned buffer on compute stream
+                                    # and immediately release slot back to the decode ring
+                                    t_in = slot.tensor.clone()
+                                    t_in.record_stream(stream)
+                                    ring.release_slot(slot_idx, stream)
+                                    batch_tensors.append(t_in)
+                                else:
+                                    # Stage 1: NVDEC Decode
+                                    t_d0 = time.perf_counter()
+                                    dec_frame: Any = dec[frame_idx]
+                                    t_d1 = time.perf_counter()
+                                    total_decode_time_s += (t_d1 - t_d0)
+
+                                    # Stage 2: DLPack Zero-Copy Interop & Pointer Verification
+                                    plane_ptr = int(dec_frame.GetPtrToPlane(0))
+                                    t_raw = torch.from_dlpack(dec_frame)
+                                    raw_ptr = int(t_raw.data_ptr())
+                                    t_raw.record_stream(stream)
+
+                                    if len(pointer_traces) < max_trace_frames:
+                                        pointer_traces.append(
+                                            InteropPointerTrace(
+                                                frame_index=frame_idx,
+                                                plane_ptr=plane_ptr,
+                                                tensor_ptr=raw_ptr,
+                                                ptrs_match=(plane_ptr == raw_ptr),
+                                                shape=list(t_raw.shape),
+                                                dtype=str(t_raw.dtype),
+                                                device=str(t_raw.device),
+                                            ).to_dict()
+                                        )
+
+                                    # Surface reuse safety: must be OWNED clone before next NVDEC decode
+                                    t_in = t_raw.clone()
+                                    t_in.record_stream(stream)
+                                    batch_tensors.append(t_in)
+
+                            # Check cancellation before launching batch inference
+                            if cancel_callback is not None and cancel_callback():
+                                raise ConversionCancelledError("Conversion aborted: cancellation requested by caller.")
+
+                            # Stage 3: Real DA3 Depth Inference (GPU VRAM) for the batch
+                            t_m0 = time.perf_counter()
+                            depth_results = adapter.infer_tensor_batch(
+                                batch_tensors,
+                                depth_scale=canon_depth_scale,
+                                return_original_size=True,
+                                autocast=True,
+                                timing=False,
+                            )
+                            t_m1 = time.perf_counter()
+                            total_depth_time_s += (t_m1 - t_m0)
+
+                            if len(depth_results) != group_size:
+                                raise ConversionError(
+                                    f"infer_tensor_batch returned {len(depth_results)} results, expected {group_size}."
+                                )
+
+                            # Chronological downstream processing for each frame in the batch
+                            for i, t_in in enumerate(batch_tensors):
+                                if cancel_callback is not None and cancel_callback():
+                                    raise ConversionCancelledError("Conversion aborted: cancellation requested by caller.")
+
+                                depth_res = depth_results[i]
+
+                                # Stage 3b: GPU Temporal Depth Stabilization & Online Normalization
+                                final_depth = depth_res.depth
+                                norm_bounds: Optional[Union[Tuple[float, float], Tuple[torch.Tensor, torch.Tensor], Any]] = None
+                                if stabilizer is not None:
+                                    t_t0 = time.perf_counter()
+                                    raw_d = depth_res.depth_raw
+                                    h_raw, w_raw = raw_d.shape[-2:]
+
+                                    # Scale RGB on GPU to match depth_raw shape if necessary
+                                    if t_in.shape[0] != h_raw or t_in.shape[1] != w_raw:
+                                        t_in_chw = t_in.permute(2, 0, 1).unsqueeze(0).float()
+                                        rgb_scaled = F.interpolate(t_in_chw, size=(h_raw, w_raw), mode="area")
+                                    else:
+                                        rgb_scaled = t_in
+
+                                    temp_res = stabilizer.process_frame(
+                                        frame_rgb=rgb_scaled,
+                                        raw_depth=raw_d,
+                                        compute_diagnostics=compute_diagnostics,
+                                    )
+
+                                    # Upscale stabilized depth back onto full-resolution geometry
+                                    if (h_raw, w_raw) != (in_h, in_w):
+                                        final_depth = F.interpolate(
+                                            temp_res.depth.unsqueeze(0).unsqueeze(0),
+                                            size=(in_h, in_w),
+                                            mode="bilinear",
+                                            align_corners=False,
+                                        ).squeeze(0).squeeze(0)
+                                    else:
+                                        final_depth = temp_res.depth
+
+                                    final_depth.record_stream(stream)
+                                    norm_bounds = temp_res.normalization_bounds
+                                    t_t1 = time.perf_counter()
+                                    total_temporal_time_s += (t_t1 - t_t0)
+
+                                # Stage 4: Depth-Aware Stereoscopic Rendering (GPU VRAM)
+                                t_s0 = time.perf_counter()
+                                stereo_res = render_stereo_frame(
+                                    image=t_in,
+                                    depth=final_depth,
+                                    config=stereo_config,
+                                    device=target_device,
+                                    return_numpy=False,
+                                    output_uint8=True,
+                                    normalization_bounds=norm_bounds,
+                                    compute_diagnostics=compute_diagnostics,
+                                )
+                                t_s1 = time.perf_counter()
+                                total_stereo_time_s += (t_s1 - t_s0)
+
+                                # Stage 5: Full SBS 4-channel composition and NVENC Encode
+                                t_e0 = time.perf_counter()
+                                sbs_color = stereo_res.sbs_color
+                                if not isinstance(sbs_color, torch.Tensor):
+                                    raise TypeError(f"Expected sbs_color to be torch.Tensor, got {type(sbs_color)}")
+                                sbs_color.record_stream(stream)
+                                t_enc = torch.cat([sbs_color, alpha], dim=2)  # [H, 2W, 4] ABGR
+                                t_enc.record_stream(stream)
+
+                                pkts = enc.Encode(t_enc)
+                                for p in pkts:
+                                    muxer.MuxVideoPacket(p["data"], p["picture_type"], p["timestamp"])
+                                t_e1 = time.perf_counter()
+                                total_encode_time_s += (t_e1 - t_e0)
+
+                                processed_count += 1
+                                if progress_callback is not None:
+                                    try:
+                                        progress_callback(processed_count, total_frames)
+                                    except (ConversionCancelledError, TransactionCancelledError, InterruptedError):
+                                        raise
+                                    except Exception as cb_err:
+                                        if "cancel" in type(cb_err).__name__.lower() or "cancel" in str(cb_err).lower():
+                                            raise ConversionCancelledError(f"Conversion cancelled by progress callback: {cb_err}") from cb_err
+                                        logger.warning("Non-fatal exception in progress_callback ignored: %s", cb_err)
 
                     # Flush remaining frames from encoder
                     t_flush_0 = time.perf_counter()
@@ -758,6 +963,14 @@ def convert_video_gpu(
     mean_ste = (total_stereo_time_s / processed_count * 1000.0) if processed_count > 0 else 0.0
     mean_enc = (total_encode_time_s / processed_count * 1000.0) if processed_count > 0 else 0.0
 
+    peak_memory_mb: Optional[float] = None
+    if torch.cuda.is_available():
+        try:
+            peak_bytes = torch.cuda.max_memory_allocated(gpu_id)
+            peak_memory_mb = round(peak_bytes / (1024 * 1024), 2)
+        except Exception:
+            peak_memory_mb = None
+
     return GpuConversionResult(
         input_path=resolved_input,
         output_path=resolved_output,
@@ -784,4 +997,6 @@ def convert_video_gpu(
         validation_overhead_s=validation_overhead_s,
         mean_temporal_ms=mean_tem,
         scheduling=scheduling,
+        batch_size=batch_size,
+        peak_memory_mb=peak_memory_mb,
     )

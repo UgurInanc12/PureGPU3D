@@ -142,7 +142,7 @@ def run_desktop(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--input", type=str, help="Initial input video path.")
     parser.add_argument("--output", type=str, help="Initial output Full-SBS video path.")
     parser.add_argument("--model", type=str, default="DA3-SMALL", help="Initial model selection.")
-    parser.add_argument("--strength", type=float, default=0.03, help="Initial depth strength.")
+    parser.add_argument("--strength", type=float, default=0.001, help="Initial depth strength (0 to 0.01).")
     parser.add_argument("--offscreen", action="store_true", help="Run Qt using offscreen platform.")
     parser.add_argument("--screenshot", type=str, help="Save offscreen window screenshot to specified image path and exit.")
 

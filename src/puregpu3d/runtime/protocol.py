@@ -68,7 +68,7 @@ class WorkerCommand:
     output_path: str
     model_id: str = "DA3-SMALL"
     device: Optional[str] = None
-    disparity_strength: float = 0.03
+    disparity_strength: float = 0.001
     q_screen: float = 0.6
     depth_scale: str = "1/2"
     pipeline_route: str = PipelineRoute.AUTO
@@ -79,6 +79,17 @@ class WorkerCommand:
     ffmpeg_path: Optional[str] = None
     ffprobe_path: Optional[str] = None
     protocol_version: str = PROTOCOL_VERSION
+    batch_size: int = 1
+
+    def __post_init__(self) -> None:
+        if isinstance(self.batch_size, bool) or not isinstance(self.batch_size, int):
+            raise TypeError(
+                f"batch_size must be an integer, got {type(self.batch_size).__name__} ({self.batch_size!r})"
+            )
+        if self.batch_size < 1 or self.batch_size > 20:
+            raise ValueError(
+                f"batch_size must be an integer between 1 and 20, got {self.batch_size}"
+            )
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
@@ -91,7 +102,7 @@ class WorkerCommand:
             output_path=str(data["output_path"]),
             model_id=str(data.get("model_id", "DA3-SMALL")),
             device=data.get("device"),
-            disparity_strength=float(data.get("disparity_strength", 0.03)),
+            disparity_strength=float(data.get("disparity_strength", 0.001)),
             q_screen=float(data.get("q_screen", 0.6)),
             depth_scale=str(data.get("depth_scale", "1/2")),
             pipeline_route=str(data.get("pipeline_route", PipelineRoute.AUTO)),
@@ -102,6 +113,7 @@ class WorkerCommand:
             ffmpeg_path=data.get("ffmpeg_path"),
             ffprobe_path=data.get("ffprobe_path"),
             protocol_version=str(data.get("protocol_version", PROTOCOL_VERSION)),
+            batch_size=data.get("batch_size", 1),
         )
 
     @classmethod

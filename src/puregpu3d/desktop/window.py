@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -258,6 +259,28 @@ class MainWindow(QMainWindow):
         self.backend_status_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         model_layout.addWidget(self.backend_status_label)
 
+        # Batch Size Selection (GPU route only)
+        batch_select_layout = QHBoxLayout()
+        batch_select_layout.addWidget(QLabel("Depth Batch Size (Frames):"))
+        self.batch_spin = QSpinBox()
+        self.batch_spin.setMinimumHeight(28)
+        self.batch_spin.setRange(1, 20)
+        self.batch_spin.setSingleStep(1)
+        self.batch_spin.setValue(self.controller.batch_size)
+        self.batch_spin.valueChanged.connect(self._on_batch_spin_changed)
+        batch_select_layout.addWidget(self.batch_spin, stretch=1)
+        model_layout.addLayout(batch_select_layout)
+
+        self.batch_hint_label = QLabel(
+            "Default: 1 (sequential). Higher values (up to 20) process independent frames concurrently on GPU, "
+            "increasing throughput but substantially increasing GPU VRAM usage. "
+            "Batching applies only to the GPU pipeline route (not supported in Compatible mode)."
+        )
+        self.batch_hint_label.setStyleSheet("color: #b9c8da; font-size: 11px;")
+        self.batch_hint_label.setWordWrap(True)
+        self.batch_hint_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        model_layout.addWidget(self.batch_hint_label)
+
         scroll_layout.addWidget(model_group)
 
         # -------------------------------------------------------------------
@@ -269,8 +292,8 @@ class MainWindow(QMainWindow):
         stereo_layout.addWidget(QLabel("Natural Depth Strength:"), 0, 0)
         self.strength_spin = QDoubleSpinBox()
         self.strength_spin.setMinimumHeight(28)
-        self.strength_spin.setRange(0.000, 0.100)
-        self.strength_spin.setSingleStep(0.005)
+        self.strength_spin.setRange(0.000, 0.010)
+        self.strength_spin.setSingleStep(0.001)
         self.strength_spin.setDecimals(3)
         self.strength_spin.setValue(self.controller.disparity_strength)
         self.strength_spin.valueChanged.connect(self._on_strength_spin_changed)
@@ -278,12 +301,12 @@ class MainWindow(QMainWindow):
 
         self.strength_slider = QSlider(Qt.Orientation.Horizontal)
         self.strength_slider.setMinimumHeight(24)
-        self.strength_slider.setRange(0, 100)
+        self.strength_slider.setRange(0, 10)
         self.strength_slider.setValue(int(self.controller.disparity_strength * 1000))
         self.strength_slider.valueChanged.connect(self._on_strength_slider_changed)
         stereo_layout.addWidget(self.strength_slider, 0, 2)
 
-        depth_hint = QLabel("Default: 0.030. Reduce strength if the stereo effect feels uncomfortable.")
+        depth_hint = QLabel("Default: 0.001. Maximum: 0.010. Reduce strength if the stereo effect feels uncomfortable.")
         depth_hint.setStyleSheet("color: #b9c8da; font-size: 11px;")
         stereo_layout.addWidget(depth_hint, 1, 0, 1, 3)
 
@@ -345,6 +368,7 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.controller.depth_scale_changed.connect(self._on_depth_scale_changed)
         self.controller.pipeline_route_changed.connect(self._on_pipeline_route_changed)
+        self.controller.batch_size_changed.connect(self._on_batch_size_changed)
         self.controller.state_changed.connect(self._update_ui_state)
         self.controller.input_probed.connect(self._on_input_probed)
         self.controller.model_changed.connect(self._on_model_changed)
@@ -471,6 +495,15 @@ class MainWindow(QMainWindow):
         self.strength_spin.setValue(val)
         self.strength_spin.blockSignals(False)
         self.controller.set_disparity_strength(val)
+
+    def _on_batch_spin_changed(self, val: int) -> None:
+        self.controller.set_batch_size(val)
+
+    def _on_batch_size_changed(self, val: int) -> None:
+        if self.batch_spin.value() != val:
+            self.batch_spin.blockSignals(True)
+            self.batch_spin.setValue(val)
+            self.batch_spin.blockSignals(False)
 
     def _on_browse_input(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -624,6 +657,7 @@ class MainWindow(QMainWindow):
         self.route_combo.setEnabled(not is_running)
         self.strength_spin.setEnabled(not is_running)
         self.strength_slider.setEnabled(not is_running)
+        self.batch_spin.setEnabled(not is_running)
 
         self.convert_btn.setEnabled(not is_running and self.controller.validate_for_conversion()[0])
         self.cancel_btn.setEnabled(is_running and state != DesktopState.CANCELLING)
@@ -645,6 +679,8 @@ class MainWindow(QMainWindow):
         elif state == DesktopState.CANCELLED:
             self.status_label.setText("Conversion Cancelled")
             self.status_label.setStyleSheet("color: #6c757d; font-weight: bold;")
+
+    _on_state_changed = _update_ui_state
 
     def _on_status_updated(self, stage: str, msg: str) -> None:
         self.status_label.setText(f"[{stage.upper()}] {msg}")

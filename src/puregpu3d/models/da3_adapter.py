@@ -15,7 +15,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import cv2
 import numpy as np
@@ -791,6 +791,189 @@ class DA3DepthAdapter:
         tensor = x.unsqueeze(0)
         return tensor, (orig_h, orig_w), (padded_h, padded_w), geom
 
+    @classmethod
+    def preprocess_tensor_batch(
+        cls,
+        image_tensors: Union[torch.Tensor, Sequence[torch.Tensor], List[torch.Tensor]],
+        target_size: Optional[int] = DEFAULT_PROCESS_RES,
+        depth_scale: Optional[Union[str, float]] = None,
+        interpolate_mode: str = "area",
+    ) -> Tuple[torch.Tensor, Tuple[int, int], Tuple[int, int], Optional[DepthGeometry]]:
+        """GPU-native batched preprocessing for Depth Anything 3 on device tensors.
+
+        Transforms a batch of CUDA RGB tensors into the normalized (B, 1, 3, H_pad, W_pad)
+        5D tensor expected by DA3 vision transformer backbones. All operations (resizing,
+        patch padding, and ImageNet normalization) occur entirely on the device with zero
+        host copies.
+
+        Each sample in the batch is represented with sequence length S=1, guaranteeing
+        independent-frame processing without multi-view cross-attention or view reordering.
+
+        Supported input formats:
+          - Sequence/List of 3D tensors: [(H, W, 3), ...] or [(3, H, W), ...]
+          - Sequence/List of single-frame 4D tensors: [(1, 3, H, W), ...] or [(1, H, W, 3), ...]
+          - Single 4D batched tensor: (B, 3, H, W) or (B, H, W, 3)
+          - Single 5D batched tensor with S=1: (B, 1, 3, H, W) or (B, 1, H, W, 3)
+          - Single 3D tensor: (H, W, 3) or (3, H, W) (treated as B=1)
+
+        Returns:
+            (model_tensor, original_shape, processed_shape, geometry)
+            where model_tensor has shape (B, 1, 3, padded_h, padded_w).
+        """
+        orig_h: Optional[int] = None
+        orig_w: Optional[int] = None
+        x: torch.Tensor
+
+        if isinstance(image_tensors, (list, tuple)):
+            if len(image_tensors) == 0:
+                raise ValueError("image_tensors sequence must not be empty.")
+            bchw_list: List[torch.Tensor] = []
+            device = None
+            for idx, t in enumerate(image_tensors):
+                if not isinstance(t, torch.Tensor):
+                    raise TypeError(f"Item {idx} in image_tensors must be torch.Tensor, got {type(t)}")
+                if device is None:
+                    device = t.device
+                elif t.device != device:
+                    raise ValueError(
+                        f"Item {idx} device '{t.device}' does not match first tensor device '{device}'. "
+                        f"All batch elements must reside on the same device."
+                    )
+
+                if t.ndim == 3:
+                    if t.shape[2] == 3:
+                        h, w = int(t.shape[0]), int(t.shape[1])
+                        t_norm = t.permute(2, 0, 1).unsqueeze(0).contiguous()
+                    elif t.shape[0] == 3:
+                        h, w = int(t.shape[1]), int(t.shape[2])
+                        t_norm = t.unsqueeze(0).contiguous()
+                    else:
+                        raise ValueError(f"Expected 3 color channels in dim 0 or 2, got shape {tuple(t.shape)}")
+                elif t.ndim == 4:
+                    if t.shape[0] != 1:
+                        raise ValueError(
+                            f"Item {idx} in image_tensors sequence must have batch dimension 1, got shape {tuple(t.shape)}"
+                        )
+                    if t.shape[1] == 3:
+                        h, w = int(t.shape[2]), int(t.shape[3])
+                        t_norm = t.contiguous()
+                    elif t.shape[3] == 3:
+                        h, w = int(t.shape[1]), int(t.shape[2])
+                        t_norm = t.permute(0, 3, 1, 2).contiguous()
+                    else:
+                        raise ValueError(f"Expected 3 color channels in dim 1 or 3, got shape {tuple(t.shape)}")
+                else:
+                    raise ValueError(f"Expected 3D or 4D tensor for item {idx}, got shape {tuple(t.shape)}")
+
+                if orig_h is None or orig_w is None:
+                    orig_h, orig_w = h, w
+                elif (h, w) != (orig_h, orig_w):
+                    raise ValueError(
+                        f"All frames in batch must have identical spatial dimensions. "
+                        f"Frame 0 has ({orig_h}, {orig_w}), frame {idx} has ({h}, {w})"
+                    )
+                bchw_list.append(t_norm)
+            x = torch.cat(bchw_list, dim=0)
+
+        elif isinstance(image_tensors, torch.Tensor):
+            if image_tensors.ndim == 3:
+                if image_tensors.shape[2] == 3:
+                    orig_h, orig_w = int(image_tensors.shape[0]), int(image_tensors.shape[1])
+                    x = image_tensors.permute(2, 0, 1).unsqueeze(0).contiguous()
+                elif image_tensors.shape[0] == 3:
+                    orig_h, orig_w = int(image_tensors.shape[1]), int(image_tensors.shape[2])
+                    x = image_tensors.unsqueeze(0).contiguous()
+                else:
+                    raise ValueError(f"Expected 3 color channels in dim 0 or 2, got shape {tuple(image_tensors.shape)}")
+            elif image_tensors.ndim == 4:
+                if image_tensors.shape[1] == 3:
+                    orig_h, orig_w = int(image_tensors.shape[2]), int(image_tensors.shape[3])
+                    x = image_tensors.contiguous()
+                elif image_tensors.shape[3] == 3:
+                    orig_h, orig_w = int(image_tensors.shape[1]), int(image_tensors.shape[2])
+                    x = image_tensors.permute(0, 3, 1, 2).contiguous()
+                else:
+                    raise ValueError(f"Expected 3 color channels in dim 1 or 3, got shape {tuple(image_tensors.shape)}")
+            elif image_tensors.ndim == 5:
+                if image_tensors.shape[1] != 1:
+                    raise ValueError(
+                        f"Dimension 1 (sequence length S) must be 1 for independent frame inference, "
+                        f"got shape {tuple(image_tensors.shape)}. Multi-view S>1 causes cross-frame attention leaks."
+                    )
+                if image_tensors.shape[2] == 3:
+                    orig_h, orig_w = int(image_tensors.shape[3]), int(image_tensors.shape[4])
+                    x = image_tensors.squeeze(1).contiguous()
+                elif image_tensors.shape[4] == 3:
+                    orig_h, orig_w = int(image_tensors.shape[2]), int(image_tensors.shape[3])
+                    x = image_tensors.squeeze(1).permute(0, 3, 1, 2).contiguous()
+                else:
+                    raise ValueError(f"Expected 3 color channels in dim 2 or 4, got shape {tuple(image_tensors.shape)}")
+            else:
+                raise ValueError(f"Expected 3D, 4D, or 5D tensor, got shape {tuple(image_tensors.shape)}")
+        else:
+            raise TypeError(f"Expected torch.Tensor or Sequence[torch.Tensor], got {type(image_tensors)}")
+
+        assert orig_h is not None and orig_w is not None
+        batch_size = x.shape[0]
+        if batch_size < 1:
+            raise ValueError("Batch size must be >= 1.")
+
+        # Dtype normalization to [0.0, 1.0] float32
+        if x.dtype == torch.uint8:
+            x = x.to(dtype=torch.float32) / 255.0
+        elif x.dtype in (torch.float32, torch.float16, torch.bfloat16):
+            x = x.to(dtype=torch.float32)
+        else:
+            raise TypeError(f"Unsupported tensor dtype {x.dtype}. Expected torch.uint8 or float32/16")
+
+        geom: Optional[DepthGeometry] = None
+        if depth_scale is not None:
+            geom = compute_depth_geometry(orig_w, orig_h, scale=depth_scale)
+            target_w, target_h = geom.req_width, geom.req_height
+        else:
+            effective_target = target_size if target_size is not None else DEFAULT_PROCESS_RES
+            longest = max(orig_h, orig_w)
+            scale = float(effective_target) / float(longest)
+            scaled_w = max(1, int(round(orig_w * scale)))
+            scaled_h = max(1, int(round(orig_h * scale)))
+
+            def round_to_multiple(dim: int, patch: int = PATCH_SIZE) -> int:
+                down = (dim // patch) * patch
+                up = down + patch
+                return up if abs(up - dim) <= abs(dim - down) else down
+
+            final_w = max(PATCH_SIZE, round_to_multiple(scaled_w))
+            final_h = max(PATCH_SIZE, round_to_multiple(scaled_h))
+            target_w, target_h = final_w, final_h
+
+        # GPU resize across all batch items in parallel
+        if (orig_h, orig_w) != (target_h, target_w):
+            if target_w < orig_w and target_h < orig_h and interpolate_mode == "area":
+                x = F.interpolate(x, size=(target_h, target_w), mode="area")
+            else:
+                mode = interpolate_mode if interpolate_mode in ("bilinear", "bicubic") else "bilinear"
+                x = F.interpolate(x, size=(target_h, target_w), mode=mode, align_corners=False)
+
+        # Padding to patch size (14)
+        if geom is not None:
+            if geom.pad_right > 0 or geom.pad_bottom > 0:
+                if geom.req_width > geom.pad_right and geom.req_height > geom.pad_bottom:
+                    x = F.pad(x, (0, geom.pad_right, 0, geom.pad_bottom), mode="reflect")
+                else:
+                    x = F.pad(x, (0, geom.pad_right, 0, geom.pad_bottom), mode="replicate")
+            padded_h, padded_w = geom.padded_height, geom.padded_width
+        else:
+            padded_h, padded_w = target_h, target_w
+
+        # ImageNet normalization on GPU
+        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32, device=x.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=x.device).view(1, 3, 1, 1)
+        x = (x - mean) / std
+
+        # 5D tensor: (B, 1, 3, H, W) - independent samples with S=1
+        tensor = x.unsqueeze(1)
+        return tensor, (orig_h, orig_w), (padded_h, padded_w), geom
+
     def infer(
         self,
         image: Union[str, Path, np.ndarray, Image.Image],
@@ -1099,6 +1282,208 @@ class DA3DepthAdapter:
             max_depth=d_max,
             mean_depth=d_mean,
         )
+
+    def infer_tensor_batch(
+        self,
+        image_tensors: Union[torch.Tensor, Sequence[torch.Tensor], List[torch.Tensor]],
+        target_size: Optional[int] = DEFAULT_PROCESS_RES,
+        depth_scale: Optional[Union[str, float]] = None,
+        return_original_size: bool = True,
+        autocast: bool = True,
+        interpolate_mode: str = "area",
+        validate_finite: bool = False,
+        ensure_positive: bool = False,
+        compute_stats: bool = False,
+        timing: bool = True,
+    ) -> List[DepthTensorResult]:
+        """Run depth estimation directly on GPU-resident image tensors in batches.
+
+        Guarantees zero CPU-memory copies for image inputs and depth outputs.
+        Processes B independent frames simultaneously with sequence length S=1,
+        eliminating multi-view cross-attention leakage while leveraging GPU parallelism.
+
+        Args:
+            image_tensors: Batched tensor (B, 3, H, W) / (B, H, W, 3) or Sequence of tensors.
+                           All tensors must reside on self.device.
+            target_size: Longest dimension size for processing (legacy default 504).
+            depth_scale: Explicit spatial depth scale ('1/4', '1/2', '1/1').
+            return_original_size: If True, interpolates fullres depth to match input (H, W) on GPU.
+            autocast: If True and on CUDA, enables torch.autocast(fp16).
+            interpolate_mode: Downscale interpolation mode ('area', 'bilinear', 'bicubic').
+            validate_finite: If True, checks torch.isfinite() with a scalar sync.
+            ensure_positive: If True, clamps depth values to min=1e-6 entirely on GPU.
+            compute_stats: If True, calculates per-frame (min, max, mean) with explicit sync.
+            timing: If True, records latency in milliseconds using CUDA events.
+                    Each DepthTensorResult.latency_ms reports amortized per-frame latency
+                    (total_batch_latency_ms / batch_size).
+
+        Returns:
+            List of DepthTensorResult objects of length B, one for each frame in the batch.
+        """
+        if isinstance(image_tensors, torch.Tensor):
+            if image_tensors.device != self.device:
+                raise ValueError(
+                    f"Input tensor device '{image_tensors.device}' does not match adapter device '{self.device}'. "
+                    f"Tensors must already reside on device to guarantee zero host copies."
+                )
+        elif isinstance(image_tensors, (list, tuple)):
+            if len(image_tensors) == 0:
+                raise ValueError("image_tensors must not be empty.")
+            for idx, t in enumerate(image_tensors):
+                if not isinstance(t, torch.Tensor):
+                    raise TypeError(f"Item {idx} in image_tensors must be torch.Tensor, got {type(t)}")
+                if t.device != self.device:
+                    raise ValueError(
+                        f"Item {idx} device '{t.device}' does not match adapter device '{self.device}'. "
+                        f"Tensors must already reside on device to guarantee zero host copies."
+                    )
+        else:
+            raise TypeError(f"Expected torch.Tensor or Sequence[torch.Tensor], got {type(image_tensors)}")
+
+        tensor, orig_shape, proc_shape, geom = self.preprocess_tensor_batch(
+            image_tensors,
+            target_size=target_size,
+            depth_scale=depth_scale,
+            interpolate_mode=interpolate_mode,
+        )
+        batch_size = tensor.shape[0]
+
+        is_cuda = self.device.type == "cuda"
+        dtype_str = "float16" if (is_cuda and autocast) else "float32"
+
+        start_event: Any = None
+        end_event: Any = None
+        t_start: float = 0.0
+
+        if timing:
+            if is_cuda:
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
+                start_event.record()
+            else:
+                t_start = time.perf_counter()
+
+        with torch.no_grad():
+            if is_cuda and autocast:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    out = self.model(tensor, infer_gs=False)
+            else:
+                out = self.model(tensor, infer_gs=False)
+
+        total_latency_ms = 0.0
+        if timing:
+            if is_cuda and start_event is not None and end_event is not None:
+                end_event.record()
+                end_event.synchronize()
+                total_latency_ms = float(start_event.elapsed_time(end_event))
+            else:
+                total_latency_ms = (time.perf_counter() - t_start) * 1000.0
+
+        per_frame_latency = total_latency_ms / batch_size if batch_size > 0 else total_latency_ms
+
+        # Extract depth tensor
+        if hasattr(out, "depth"):
+            depth_tensor = out.depth
+        elif isinstance(out, dict) and "depth" in out:
+            depth_tensor = out["depth"]
+        else:
+            raise ValueError(
+                f"Model output did not contain 'depth' field. "
+                f"Available fields: {list(out.keys()) if hasattr(out, 'keys') else dir(out)}"
+            )
+
+        # Shape from model is (B, 1, H_pad, W_pad)
+        if depth_tensor.ndim == 4 and depth_tensor.shape[1] == 1:
+            depth_tensor = depth_tensor.squeeze(1)
+        elif depth_tensor.ndim == 3 and depth_tensor.shape[0] == batch_size:
+            pass
+        elif depth_tensor.ndim == 2 and batch_size == 1:
+            depth_tensor = depth_tensor.unsqueeze(0)
+        else:
+            raise ValueError(f"Unexpected depth tensor shape: {depth_tensor.shape} for batch size {batch_size}")
+
+        depth_tensor = depth_tensor.detach().float()
+
+        # Unpad back to requested content dimensions
+        if geom is not None:
+            depth_raw = depth_tensor[:, : geom.req_height, : geom.req_width]
+        else:
+            depth_raw = depth_tensor
+
+        # Clamping / positive handling on GPU if requested
+        if ensure_positive:
+            depth_raw = torch.clamp(depth_raw, min=1e-6)
+
+        # Full-resolution GPU depth
+        orig_h, orig_w = orig_shape
+        if return_original_size and (depth_raw.shape[1] != orig_h or depth_raw.shape[2] != orig_w):
+            depth_full = F.interpolate(
+                depth_raw.unsqueeze(1),
+                size=(orig_h, orig_w),
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(1)
+            if ensure_positive:
+                depth_full = torch.clamp(depth_full, min=1e-6)
+        else:
+            depth_full = depth_raw
+
+        # Optional scalar synchronization checks
+        if validate_finite:
+            if not torch.isfinite(depth_raw).all().item():
+                raise ValueError("Depth prediction produced non-finite values (NaN or Inf).")
+
+        d_mins: List[Optional[float]] = [None] * batch_size
+        d_maxs: List[Optional[float]] = [None] * batch_size
+        d_means: List[Optional[float]] = [None] * batch_size
+        if compute_stats:
+            d_mins_t = depth_full.amin(dim=(-2, -1)).tolist()
+            d_maxs_t = depth_full.amax(dim=(-2, -1)).tolist()
+            d_means_t = depth_full.mean(dim=(-2, -1)).tolist()
+            d_mins = [float(x) for x in d_mins_t]
+            d_maxs = [float(x) for x in d_maxs_t]
+            d_means = [float(x) for x in d_means_t]
+
+        # Metadata extraction
+        is_metric_out = False
+        if isinstance(out, dict):
+            raw_metric = out.get("is_metric")
+            if isinstance(raw_metric, (bool, int, float)):
+                is_metric_out = bool(raw_metric)
+        is_metric_pred = bool(is_metric_out or self.is_metric)
+
+        scale_val: Optional[float] = None
+        if isinstance(out, dict):
+            raw_scale = out.get("scale_factor")
+            if isinstance(raw_scale, (int, float)):
+                scale_val = float(raw_scale)
+            elif isinstance(raw_scale, torch.Tensor) and raw_scale.numel() == 1:
+                scale_val = float(raw_scale.item())
+
+        units = "meters" if is_metric_pred else self.depth_units
+
+        results: List[DepthTensorResult] = []
+        for i in range(batch_size):
+            results.append(
+                DepthTensorResult(
+                    depth=depth_full[i],
+                    depth_raw=depth_raw[i],
+                    input_shape=orig_shape,
+                    processed_shape=proc_shape,
+                    latency_ms=per_frame_latency,
+                    device=str(self.device),
+                    dtype=dtype_str,
+                    is_metric=is_metric_pred,
+                    metric_scale=scale_val,
+                    model_id=self.entry.id,
+                    depth_units=units,
+                    geometry=geom,
+                    min_depth=d_mins[i],
+                    max_depth=d_maxs[i],
+                    mean_depth=d_means[i],
+                )
+            )
+        return results
 
     @staticmethod
     def colorize_depth(depth: np.ndarray, colormap: int = cv2.COLORMAP_INFERNO) -> np.ndarray:

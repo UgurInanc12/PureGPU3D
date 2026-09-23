@@ -319,6 +319,10 @@ def run_worker(command: Any) -> int:
             )
         )
 
+        if chosen_route != "gpu" and command.batch_size > 1:
+            emit_protocol(make_error_msg(job_id, "Batch sizes above 1 require the GPU pipeline. Select GPU or batch size 1.", stage=Stage.VALIDATING))
+            return 1
+
         def load_verifier(rev_dir: Path) -> None:
             sys.stderr.write(f"[worker] Verifying model load at {rev_dir} on {target_device}...\n")
             DA3DepthAdapter(model_dir=rev_dir, identifier=model_entry.id, device=target_device)
@@ -426,6 +430,7 @@ def run_worker(command: Any) -> int:
 
         if chosen_route == "gpu":
             res = convert_video_gpu(
+                batch_size=command.batch_size,
                 input_path=input_path,
                 output_path=output_path,
                 model=adapter,
@@ -468,6 +473,7 @@ def run_worker(command: Any) -> int:
         emit_protocol(make_status_msg(job_id, Stage.COMPLETED, "Conversion completed successfully."))
 
         res_dict = res.to_dict()
+        res_dict["batch_size"] = command.batch_size
         res_dict["pipeline_route"] = chosen_route
         res_dict["backend"] = "gpu_resident" if chosen_route == "gpu" else "ffmpeg_compatible"
         res_dict["resolved_backend"] = (
